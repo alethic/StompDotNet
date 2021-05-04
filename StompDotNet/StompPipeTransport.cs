@@ -2,6 +2,7 @@
 using System.Buffers;
 using System.IO.Pipelines;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
@@ -31,19 +32,19 @@ namespace StompDotNet
         }
 
         /// <summary>
-        /// Begins receiving data from the transport and invokes <paramref name="onReceiveFrameAsync"/> when a frame is available.
+        /// Begins receiving data from the transport and invokes <paramref name="onReceiveAsync"/> when a frame is available.
         /// </summary>
-        /// <param name="onReceiveFrameAsync"></param>
+        /// <param name="writer"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public override ValueTask ReceiveAsync(Func<StompFrame, CancellationToken, ValueTask> onReceiveFrameAsync, CancellationToken cancellationToken)
+        public override ValueTask ReceiveAsync(ChannelWriter<StompFrame> writer, CancellationToken cancellationToken)
         {
-            if (onReceiveFrameAsync is null)
-                throw new ArgumentNullException(nameof(onReceiveFrameAsync));
+            if (writer is null)
+                throw new ArgumentNullException(nameof(writer));
 
             var pipe = new Pipe();
             var fill = FillPipeAsync(pipe.Writer, cancellationToken);
-            var read = ReadPipeAsync(pipe.Reader, onReceiveFrameAsync, cancellationToken);
+            var read = ReadPipeAsync(pipe.Reader, writer, cancellationToken);
             return new ValueTask(Task.WhenAll(fill, read));
         }
 
@@ -59,9 +60,10 @@ namespace StompDotNet
         /// Reads buffered data and converts it to frames.
         /// </summary>
         /// <param name="reader"></param>
+        /// <param name="writer"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        async Task ReadPipeAsync(PipeReader reader, Func<StompFrame, CancellationToken, ValueTask> onReceiveFrameAsync, CancellationToken cancellationToken)
+        async Task ReadPipeAsync(PipeReader reader, ChannelWriter<StompFrame> writer, CancellationToken cancellationToken)
         {
             try
             {
@@ -82,11 +84,11 @@ namespace StompDotNet
                     }
 
                     // handle the received frame
-                    await onReceiveFrameAsync(frame, cancellationToken);
+                    await writer.WriteAsync(frame, cancellationToken);
 
                     // no more data remaining to be processed
                     if (result.IsCompleted)
-                        break;
+                        writer.Complete();
 
                     // record that we read the frame's bytes
                     reader.AdvanceTo(position, result.Buffer.End);
@@ -95,6 +97,7 @@ namespace StompDotNet
             finally
             {
                 await reader.CompleteAsync();
+                writer.Complete();
             }
         }
 

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
@@ -33,10 +34,10 @@ namespace StompDotNet
         /// <summary>
         /// Initiates the process of receiving froms from the STOMP transport.
         /// </summary>
-        /// <param name="onReceiveAsync"></param>
+        /// <param name="writer"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public abstract ValueTask ReceiveAsync(Func<StompFrame, CancellationToken, ValueTask> onReceiveAsync, CancellationToken cancellationToken);
+        public abstract ValueTask ReceiveAsync(ChannelWriter<StompFrame> writer, CancellationToken cancellationToken);
 
         /// <summary>
         /// Sends a single STOMP frame to the transport.

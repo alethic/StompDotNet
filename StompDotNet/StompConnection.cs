@@ -22,40 +22,40 @@ namespace StompDotNet
         /// <summary>
         /// Describes a condition and a handle to resume when the condition is met.
         /// </summary>
-        class FrameTrigger
+        class FrameRouter
         {
 
-            readonly Func<StompFrame, bool> filter;
-            readonly Action<StompFrame> setResult;
-            private readonly Action<Exception> setException;
+            readonly Func<StompFrame, bool> match;
+            readonly Func<StompFrame, CancellationToken, ValueTask<bool>> routeAsync;
+            readonly Func<Exception, CancellationToken, ValueTask> abortAsync;
 
             /// <summary>
             /// Initializes a new instance.
             /// </summary>
-            /// <param name="filter"></param>
-            /// <param name="setResult"></param>
-            /// <param name="setException"></param>
-            public FrameTrigger(Func<StompFrame, bool> filter, Action<StompFrame> setResult, Action<Exception> setException)
+            /// <param name="match"></param>
+            /// <param name="writeAsync"></param>
+            /// <param name="abortAsync"></param>
+            public FrameRouter(Func<StompFrame, bool> match, Func<StompFrame, CancellationToken, ValueTask<bool>> writeAsync, Func<Exception, CancellationToken, ValueTask> abortAsync)
             {
-                this.filter = filter ?? throw new ArgumentNullException(nameof(filter));
-                this.setResult = setResult ?? throw new ArgumentNullException(nameof(setResult));
-                this.setException = setException ?? throw new ArgumentNullException(nameof(setException));
+                this.match = match ?? throw new ArgumentNullException(nameof(match));
+                this.routeAsync = writeAsync ?? throw new ArgumentNullException(nameof(writeAsync));
+                this.abortAsync = abortAsync ?? throw new ArgumentNullException(nameof(abortAsync));
             }
 
             /// <summary>
             /// Filter to execute against received frames in order to decide whether to resume the handle.
             /// </summary>
-            public Func<StompFrame, bool> Filter => filter;
+            public Func<StompFrame, bool> Match => match;
 
             /// <summary>
-            /// Action to be invoked when a matching frame is received.
+            /// Action to be invoked when a matching frame is received. Returns <c>true</c> or <c>false</c> to signal whether to maintain the listener.
             /// </summary>
-            public Action<StompFrame> SetResult => setResult;
+            public Func<StompFrame, CancellationToken, ValueTask<bool>> RouteAsync => routeAsync;
 
             /// <summary>
-            /// Action to be invoked when the trigger terminates.
+            /// Action to be invoked when the router is aborted.
             /// </summary>
-            public Action<Exception> SetException => setException;
+            public Func<Exception, CancellationToken, ValueTask> AbortAsync => abortAsync;
 
         }
 
@@ -63,14 +63,20 @@ namespace StompDotNet
         readonly StompConnectionOptions options;
         readonly ILogger logger;
 
-        readonly AsyncLock sync = new AsyncLock();
+        readonly AsyncLock stateLock = new AsyncLock();
+
+        // channels that store frames as they move in and out of the system
         readonly Channel<StompFrame> recv = Channel.CreateUnbounded<StompFrame>();
         readonly Channel<StompFrame> send = Channel.CreateUnbounded<StompFrame>();
-        readonly LinkedList<FrameTrigger> triggers = new LinkedList<FrameTrigger>();
+
+        // internal frame routing
+        readonly LinkedList<FrameRouter> routers = new LinkedList<FrameRouter>();
+        readonly AsyncLock routersLock = new AsyncLock();
 
         Task runner;
         CancellationTokenSource runnerCts;
-        int receiptId = 0;
+        int prevReceiptId = 0;
+        int prevSubscriptionId = 0;
 
         /// <summary>
         /// Initializes a new instance.
@@ -92,13 +98,16 @@ namespace StompDotNet
         /// <returns></returns>
         internal async Task OpenAsync(CancellationToken cancellationToken)
         {
-            using (await sync.LockAsync(cancellationToken))
+            using (await stateLock.LockAsync(cancellationToken))
             {
                 if (runner != null)
                     throw new StompException("Connection has already been started.");
 
+                // ensure there are no listeners hanging around
+                using (await routersLock.LockAsync(cancellationToken))
+                    routers.Clear();
+
                 // begin new run loop
-                triggers.Clear();
                 runnerCts = new CancellationTokenSource();
                 runner = Task.Run(() => RunAsync(runnerCts.Token), CancellationToken.None);
             }
@@ -121,7 +130,7 @@ namespace StompDotNet
         /// <returns></returns>
         async Task CloseAsync(CancellationToken cancellationToken, bool disposing = false)
         {
-            using (await sync.LockAsync(cancellationToken))
+            using (await stateLock.LockAsync(cancellationToken))
             {
                 // during disposal, we don't want to do any work if we're already closed
                 if (runner == null && disposing)
@@ -134,7 +143,10 @@ namespace StompDotNet
                 // disconnect from the transport
                 try
                 {
-                    await DisconnectAsync(cancellationToken: cancellationToken);
+                    // disconnect, but only allow 2 seconds
+                    var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2)).Token;
+                    var combine = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout).Token;
+                    await DisconnectAsync(cancellationToken: CancellationToken.None);
                 }
                 catch (OperationCanceledException)
                 {
@@ -149,7 +161,7 @@ namespace StompDotNet
                     logger.LogError(e, "Unexpected exception disconnecting from the STOMP server.");
                 }
 
-                // abort any outstanding triggers, they'll never complete
+                // abort any outstanding routers, they'll never complete
                 await AbortAsync(cancellationToken);
 
                 // signal cancellation of the runner and wait for completion
@@ -159,7 +171,6 @@ namespace StompDotNet
                 // clean up the runner state
                 runner = null;
                 runnerCts = null;
-                triggers.Clear();
 
                 // close and dispose of the transport
                 await transport.CloseAsync(cancellationToken);
@@ -177,7 +188,7 @@ namespace StompDotNet
             {
                 try
                 {
-                    var readTask = transport.ReceiveAsync(recv.Writer.WriteAsync, cancellationToken).AsTask();
+                    var readTask = transport.ReceiveAsync(recv.Writer, cancellationToken).AsTask();
                     var recvTask = RunReceiveAsync(cancellationToken);
                     var sendTask = RunSendAsync(cancellationToken);
                     await Task.WhenAll(readTask, recvTask, sendTask);
@@ -188,7 +199,7 @@ namespace StompDotNet
                 }
                 catch (Exception e)
                 {
-                    logger.LogError(e, "Unhandled exception during STOMP processing.");
+                    logger.LogError(e, "Unhandled exception during STOMP connecton processing.");
                 }
             }
         }
@@ -203,12 +214,25 @@ namespace StompDotNet
             try
             {
                 while (await send.Reader.WaitToReadAsync(cancellationToken))
-                    await transport.SendAsync(await send.Reader.ReadAsync(cancellationToken), cancellationToken);
+                    await OnSendAsync(await send.Reader.ReadAsync(cancellationToken), cancellationToken);
             }
             catch (OperationCanceledException)
             {
                 // ignore
             }
+        }
+
+        /// <summary>
+        /// Handles outgoing messages to the transport.
+        /// </summary>
+        /// <param name="frame"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        async ValueTask OnSendAsync(StompFrame frame, CancellationToken cancellationToken)
+        {
+            logger.LogDebug("Sending STOMP frame: {Command}", frame.Command);
+
+            await transport.SendAsync(frame, cancellationToken);
         }
 
         /// <summary>
@@ -235,31 +259,35 @@ namespace StompDotNet
         /// <param name="frame"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        ValueTask OnReceiveAsync(StompFrame frame, CancellationToken cancellationToken)
+        async ValueTask OnReceiveAsync(StompFrame frame, CancellationToken cancellationToken)
         {
-            // resume any handles that match
-            lock (triggers)
+            logger.LogDebug("Received STOMP frame: {Command}", frame.Command);
+
+            // execute and act upon any registered listeners
+            using (await routersLock.LockAsync(cancellationToken))
+                if (FindListenerNode(frame) is LinkedListNode<FrameRouter> node)
+                    if (await TryRouteAsync(node.Value, frame, cancellationToken) == false)
+                        if (node.List != null)
+                            routers.Remove(node);
+        }
+
+        /// <summary>
+        /// Attempts to execute the listener and return whether or not it should be removed. If the listener throws an exception, it is logged and marked for removal.
+        /// </summary>
+        /// <param name="router"></param>
+        /// <param name="frame"></param>
+        /// <returns></returns>
+        async ValueTask<bool> TryRouteAsync(FrameRouter router, StompFrame frame, CancellationToken cancellationToken)
+        {
+            try
             {
-                var node = FindEventHandleNode(frame);
-                if (node != null)
-                {
-                    // remove trigger immediately to prevent double calls
-                    if (node.List != null)
-                        triggers.Remove(node);
-
-                    try
-                    {
-                        // execute trigger action
-                        node.Value.SetResult(frame);
-                    }
-                    catch (Exception e)
-                    {
-                        logger.LogError(e, "Unhandled exception occurred dispatching frame to trigger.");
-                    }
-                }
+                return await router.RouteAsync(frame, cancellationToken);
             }
-
-            return ValueTask.CompletedTask;
+            catch (Exception e)
+            {
+                logger.LogError(e, "Unhandled exception occurred dispatching frame to trigger.");
+                return false;
+            }
         }
 
         /// <summary>
@@ -269,15 +297,35 @@ namespace StompDotNet
         /// <returns></returns>
         async ValueTask AbortAsync(CancellationToken cancellationToken)
         {
-            var e = new StompConnectionAbortedException();
+            var exception = new StompConnectionAbortedException();
 
-            lock (triggers)
+            using (await routersLock.LockAsync(cancellationToken))
             {
-                for (var node = triggers.First; node != null; node = node.Next)
-                {
-                    triggers.Remove(node);
-                    node.Value.SetException(e);
-                }
+                // send abort exception to all of the routers
+                for (var node = routers.First; node != null; node = node.Next)
+                    await TryAbortRouter(node.Value, exception, cancellationToken); // result does not matter, always error
+
+                // clear the list of listeners
+                routers.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Attempts to pass an error to the router and return whether or not it should be removed.
+        /// </summary>
+        /// <param name="router"></param>
+        /// <param name="exception"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        async ValueTask TryAbortRouter(FrameRouter router, Exception exception, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await router.AbortAsync(exception, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Unhandled exception occurred dispatching exception to listener.");
             }
         }
 
@@ -286,10 +334,10 @@ namespace StompDotNet
         /// </summary>
         /// <param name="frame"></param>
         /// <returns></returns>
-        LinkedListNode<FrameTrigger> FindEventHandleNode(StompFrame frame)
+        LinkedListNode<FrameRouter> FindListenerNode(StompFrame frame)
         {
-            for (var n = triggers.First; n != null; n = n.Next)
-                if (n.Value.Filter(frame))
+            for (var n = routers.First; n != null; n = n.Next)
+                if (n.Value.Match(frame))
                     return n;
 
             return null;
@@ -300,7 +348,7 @@ namespace StompDotNet
         /// </summary>
         /// <param name="frame"></param>
         /// <returns></returns>
-        async Task SendAsync(StompFrame frame, CancellationToken cancellationToken)
+        async ValueTask SendAsync(StompFrame frame, CancellationToken cancellationToken)
         {
             await send.Writer.WriteAsync(frame, cancellationToken);
         }
@@ -314,19 +362,21 @@ namespace StompDotNet
         /// <param name="response"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        async Task<StompFrame> SendAndWaitAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, Func<StompFrame, bool> response, CancellationToken cancellationToken)
+        async ValueTask<StompFrame> SendAndWaitAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, Func<StompFrame, bool> response, CancellationToken cancellationToken)
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
-            // schedule a trigger for the frame filter
+            // schedule a router for the frame filter
             var tcs = new TaskCompletionSource<StompFrame>();
-            var hnd = new FrameTrigger(response, tcs.SetResult, tcs.SetException);
+            ValueTask<bool> WriteAsync(StompFrame frame, CancellationToken cancellationToken) { tcs.SetResult(frame); return new ValueTask<bool>(false); }
+            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { tcs.SetException(exception); return ValueTask.CompletedTask; }
+            var hnd = new FrameRouter(response, WriteAsync, AbortAsync);
 
             // handle cancellation through new task
             cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
 
             // subscribe to matching frames
-            var node = RegisterTrigger(hnd);
+            var node = await RegisterRouterAsync(hnd, cancellationToken);
 
             try
             {
@@ -336,11 +386,11 @@ namespace StompDotNet
             }
             finally
             {
-                // ensure trigger is removed upon completion
+                // ensure listener is removed upon completion
                 if (node.List != null)
-                    lock (triggers)
+                    using (await routersLock.LockAsync())
                         if (node.List != null)
-                            triggers.Remove(node);
+                            routers.Remove(node);
             }
         }
 
@@ -352,11 +402,11 @@ namespace StompDotNet
         /// <param name="body"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        Task<StompFrame> SendAndWaitWithReceiptAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
+        ValueTask<StompFrame> SendAndWaitWithReceiptAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
-            var receiptIdText = Interlocked.Increment(ref receiptId).ToString();
+            var receiptIdText = Interlocked.Increment(ref prevReceiptId).ToString();
             headers = headers.Prepend(new KeyValuePair<string, string>("receipt", receiptIdText));
             return SendAndWaitAsync(command, headers, body, f => f.GetHeaderValue("receipt-id") == receiptIdText, cancellationToken);
         }
@@ -366,10 +416,10 @@ namespace StompDotNet
         /// </summary>
         /// <param name="trigger"></param>
         /// <returns></returns>
-        LinkedListNode<FrameTrigger> RegisterTrigger(FrameTrigger trigger)
+        async ValueTask<LinkedListNode<FrameRouter>> RegisterRouterAsync(FrameRouter trigger, CancellationToken cancellationToken)
         {
-            lock (triggers)
-                return triggers.AddLast(trigger);
+            using (await routersLock.LockAsync(cancellationToken))
+                return routers.AddLast(trigger);
         }
 
         /// <summary>
@@ -429,6 +479,116 @@ namespace StompDotNet
                 throw new StompException($"Error returned during STOMP connection: {Encoding.UTF8.GetString(result.Body.Span)}");
             if (result.Command != StompCommand.Receipt)
                 throw new StompException("Did not receive RECEIPT response.");
+        }
+
+        /// <summary>
+        /// Creates a subscription where each individual message requires an acknowledgement. This implements the 'client-individual' STOMP ack method.
+        /// </summary>
+        /// <param name="destination"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public async ValueTask<StompMessageSubscription> SubscribeAutoAsync(string destination, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(destination))
+                throw new ArgumentException($"'{nameof(destination)}' cannot be null or whitespace.", nameof(destination));
+
+            var id = Interlocked.Increment(ref prevSubscriptionId).ToString();
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            headers = headers.Prepend(new KeyValuePair<string, string>("destination", destination));
+            headers = headers.Prepend(new KeyValuePair<string, string>("id", id));
+            headers = headers.Prepend(new KeyValuePair<string, string>("ack", "auto"));
+
+            // establish a router for inbound messages, and direct them to a new channel for the subscription
+            var channel = Channel.CreateBounded<StompFrame>(1);
+            async ValueTask<bool> RouteAsync(StompFrame frame, CancellationToken cancellationToken) { await channel.Writer.WriteAsync(frame, cancellationToken); return true; }
+            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { channel.Writer.Complete(exception); return ValueTask.CompletedTask; }
+            var router = await RegisterRouterAsync(new FrameRouter(frame => frame.GetHeaderValue("subscription") == id, RouteAsync, AbortAsync), cancellationToken);
+
+            // completes the channel and removes the listener
+            async ValueTask CompleteAsync(Exception exception)
+            {
+                // remove the listener to stop sending
+                if (router.List != null)
+                    using (await routersLock.LockAsync(CancellationToken.None))
+                        if (router.List != null)
+                            routers.Remove(router);
+
+                // signal to channel that we're done with messages
+                channel.Writer.Complete(exception);
+            }
+
+            try
+            {
+                // send SUBSCRIBE command
+                await SendAndWaitWithReceiptAsync(StompCommand.Subscribe, headers, null, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                // complete the channel with an error if we can't even establish it
+                await CompleteAsync(e);
+                throw;
+            }
+
+            // caller obtains a subscription reference that closes the channel upon completion
+            return new StompMessageSubscription(this, id, channel.Reader, CompleteAsync);
+        }
+
+        /// <summary>
+        /// Creates a subscription where the stream of messages thus far received can be acknowledged in a batch. This implements the 'client' STOMP ack method.
+        /// </summary>
+        /// <param name="destination"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public ValueTask<StompMessageSubscription> SubscribeClientAsync(string destination, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Creates a subscription where each individual message requires an acknowledgement. This implements the 'client-individual' STOMP ack method.
+        /// </summary>
+        /// <param name="destination"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public ValueTask<StompMessageSubscription> SubscribeClientIndividualAsync(string destination, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        /// <summary>
+        /// Unsubscribes the specified subscription.
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        internal async ValueTask UnsubscribeAsync(string id, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(id))
+                throw new ArgumentException($"'{nameof(id)}' cannot be null or empty.", nameof(id));
+
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            headers = headers.Prepend(new KeyValuePair<string, string>("id", id));
+            await SendAndWaitWithReceiptAsync(StompCommand.Unsubscribe, headers, null, cancellationToken);
+        }
+
+        /// <summary>
+        /// Unsubscribes the specified subscription.
+        /// </summary>
+        /// <param name="subscription"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        internal async ValueTask UnsubscribeAsync(StompMessageSubscription subscription, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        {
+            if (subscription is null)
+                throw new ArgumentNullException(nameof(subscription));
+
+            await UnsubscribeAsync(subscription.Id, headers, cancellationToken);
+            await subscription.CompleteAsync(null);
         }
 
         /// <summary>

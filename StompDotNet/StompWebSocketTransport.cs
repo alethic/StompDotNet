@@ -55,22 +55,22 @@ namespace StompDotNet
             {
                 while (cancellationToken.IsCancellationRequested == false)
                 {
-                    var memory = writer.GetMemory(512);
-
                     // socket is no longer connected, we're done
                     if (socket.State != WebSocketState.Open)
                         break;
 
                     // receive some data from the web socket
-                    var recv = await socket.ReceiveAsync(memory, cancellationToken);
-                    if (recv.MessageType == WebSocketMessageType.Close)
-                        break;
-
+                    var buff = writer.GetMemory(512);
+                    var recv = await socket.ReceiveAsync(buff, cancellationToken);
                     writer.Advance(recv.Count);
 
                     // push successfully read data
                     var result = await writer.FlushAsync(cancellationToken);
                     if (result.IsCompleted)
+                        break;
+
+                    // received a close message
+                    if (recv.MessageType == WebSocketMessageType.Close)
                         break;
                 }
             }
@@ -81,12 +81,11 @@ namespace StompDotNet
             catch (Exception e)
             {
                 await writer.CompleteAsync(e);
+                return;
             }
-            finally
-            {
-                // socket is complete for other reasons
-                await writer.CompleteAsync();
-            }
+
+            // socket is complete for other reasons
+            await writer.CompleteAsync();
         }
 
         /// <summary>
@@ -127,7 +126,7 @@ namespace StompDotNet
             try
             {
                 if (socket.State == WebSocketState.Open)
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "STOMP shutdown", cancellationToken);
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "DISCONNECT", cancellationToken);
             }
             catch (WebSocketException e)
             {
