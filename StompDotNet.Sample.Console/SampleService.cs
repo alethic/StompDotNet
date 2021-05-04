@@ -44,17 +44,17 @@ namespace StompDotNet.Sample.Console
             while (cancellationToken.IsCancellationRequested == false)
             {
                 var r = new Guid("5b10d7c7-589f-428d-b23b-3f02458585f7");
-                await using var s = await connection.SubscribeAutoAsync($"/topic/tagBlinkLite.{r:D}", cancellationToken: cancellationToken);
+                await using var s = await connection.SubscribeAsync($"/topic/tagBlinkLite.{r:D}", StompAckMode.ClientIndividual, cancellationToken: cancellationToken);
 
                 while (await s.WaitToReadAsync(cancellationToken))
-                    await HandleMessageAsync(await s.ReadAsync(cancellationToken));
+                    await HandleMessageAsync(await s.ReadAsync(cancellationToken), cancellationToken);
             }
         }
 
-        Task HandleMessageAsync(StompFrame frame)
+        async Task HandleMessageAsync(StompMessage message, CancellationToken cancellationToken)
         {
-            logger.LogInformation("RECEIVED: {Message}", Encoding.UTF8.GetString(frame.Body.Span));
-            return Task.CompletedTask;
+            logger.LogInformation("RECEIVED: {Message}", Encoding.UTF8.GetString(message.Body.Span));
+            await message.AckAsync(cancellationToken: cancellationToken);
         }
 
         public async Task StopAsync(CancellationToken cancellationToken)

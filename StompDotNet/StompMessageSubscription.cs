@@ -17,6 +17,7 @@ namespace StompDotNet
         readonly string id;
         readonly ChannelReader<StompFrame> reader;
         readonly Func<Exception, ValueTask> completeAsync;
+        readonly CancellationToken cancellationToken;
 
         /// <summary>
         /// Initializes a new instance.
@@ -31,6 +32,11 @@ namespace StompDotNet
             this.id = id ?? throw new ArgumentNullException(nameof(id));
             this.reader = reader ?? throw new ArgumentNullException(nameof(reader));
             this.completeAsync = completeAsync ?? throw new ArgumentNullException(nameof(completeAsync));
+
+            // when the reader is complete, the connection must be down, and we should indicate to cancel message processing
+            var cts = new CancellationTokenSource();
+            reader.Completion.ContinueWith(t => cts.Cancel());
+            cancellationToken = cts.Token;
         }
 
         /// <summary>
@@ -44,6 +50,11 @@ namespace StompDotNet
         public string Id => id;
 
         /// <summary>
+        /// Indicates the subscription has been canceled.
+        /// </summary>
+        public CancellationToken CancellationToken => cancellationToken;
+
+        /// <summary>
         /// Returns a <see cref="ValueTask"/> that will complete when a message is available to read.
         /// </summary>
         /// <param name="cancellationToken"></param>
@@ -54,13 +65,16 @@ namespace StompDotNet
         }
 
         /// <summary>
-        /// Asychronously reads an item from the subscription.
+        /// Asychronously reads a message from the subscription.
         /// </summary>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public ValueTask<StompFrame> ReadAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<StompMessage> ReadAsync(CancellationToken cancellationToken = default)
         {
-            return reader.ReadAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken) is StompFrame frame)
+                return new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body);
+
+            return null;
         }
 
         /// <summary>
