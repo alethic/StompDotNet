@@ -70,6 +70,7 @@ namespace StompDotNet
 
         Task runner;
         CancellationTokenSource runnerCts;
+        int receiptId = 0;
 
         /// <summary>
         /// Initializes a new instance.
@@ -148,6 +149,9 @@ namespace StompDotNet
                     logger.LogError(e, "Unexpected exception disconnecting from the STOMP server.");
                 }
 
+                // abort any outstanding triggers, they'll never complete
+                await AbortAsync(cancellationToken);
+
                 // signal cancellation of the runner and wait for completion
                 runnerCts.Cancel();
                 await runner;
@@ -196,11 +200,15 @@ namespace StompDotNet
         /// <returns></returns>
         async Task RunSendAsync(CancellationToken cancellationToken)
         {
-            while (await send.Reader.WaitToReadAsync(cancellationToken))
-                await transport.SendAsync(await send.Reader.ReadAsync(cancellationToken), cancellationToken);
-
-            // reached the end of the available messages, abort outstanding triggers
-            await AbortAsync(cancellationToken);
+            try
+            {
+                while (await send.Reader.WaitToReadAsync(cancellationToken))
+                    await transport.SendAsync(await send.Reader.ReadAsync(cancellationToken), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
+            }
         }
 
         /// <summary>
@@ -210,11 +218,15 @@ namespace StompDotNet
         /// <returns></returns>
         async Task RunReceiveAsync(CancellationToken cancellationToken)
         {
-            while (await recv.Reader.WaitToReadAsync(cancellationToken))
-                await OnReceiveAsync(await recv.Reader.ReadAsync(cancellationToken), cancellationToken);
-
-            // reached the end of the available events, abort outstanding triggers
-            await AbortAsync(cancellationToken);
+            try
+            {
+                while (await recv.Reader.WaitToReadAsync(cancellationToken))
+                    await OnReceiveAsync(await recv.Reader.ReadAsync(cancellationToken), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
+            }
         }
 
         /// <summary>
@@ -267,8 +279,6 @@ namespace StompDotNet
                     node.Value.SetException(e);
                 }
             }
-
-            await DisposeAsync();
         }
 
         /// <summary>
@@ -346,9 +356,9 @@ namespace StompDotNet
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
-            var receiptId = Guid.NewGuid().ToString("n");
-            headers = headers.Prepend(new KeyValuePair<string, string>("receipt", receiptId));
-            return SendAndWaitAsync(command, headers, body, f => f.GetHeaderValue("receipt-id") == receiptId, cancellationToken);
+            var receiptIdText = Interlocked.Increment(ref receiptId).ToString();
+            headers = headers.Prepend(new KeyValuePair<string, string>("receipt", receiptIdText));
+            return SendAndWaitAsync(command, headers, body, f => f.GetHeaderValue("receipt-id") == receiptIdText, cancellationToken);
         }
 
         /// <summary>
