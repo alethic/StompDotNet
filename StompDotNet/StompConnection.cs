@@ -18,7 +18,11 @@ namespace StompDotNet
     /// <summary>
     /// Maintains a connection to a STOMP server.
     /// </summary>
-    public class StompConnection : IAsyncDisposable
+    public class StompConnection :
+#if NETSTANDARD2_1
+        IAsyncDisposable,
+#endif
+        IDisposable
     {
 
         /// <summary>
@@ -794,6 +798,15 @@ namespace StompDotNet
         public async ValueTask DisposeAsync()
         {
             await CloseAsync(CancellationToken.None, true);
+        }
+
+        /// <summary>
+        /// Disposes of the instance.
+        /// </summary>
+        /// <returns></returns>
+        public void Dispose()
+        {
+            Task.Run(() => DisposeAsync()).ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
     }

@@ -14,7 +14,11 @@ namespace StompDotNet
     /// <summary>
     /// Manages the receiving and sending of STOMP frames.
     /// </summary>
-    public abstract class StompTransport : IAsyncDisposable
+    public abstract class StompTransport :
+#if NETSTANDARD2_1
+        IAsyncDisposable,
+#endif
+        IDisposable
     {
 
         readonly ILogger logger;
@@ -66,6 +70,15 @@ namespace StompDotNet
         public virtual ValueTask DisposeAsync()
         {
             return ValueTaskHelper.CompletedTask;
+        }
+
+        /// <summary>
+        /// Disposes of the instance.
+        /// </summary>
+        /// <returns></returns>
+        public void Dispose()
+        {
+            Task.Run(() => DisposeAsync()).ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
     }

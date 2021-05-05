@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace StompDotNet.Internal
 {
-    
+
 #if NETSTANDARD2_0
 
     public ref partial struct SequenceReader<T> where T : unmanaged, IEquatable<T>
@@ -142,7 +142,7 @@ namespace StompDotNet.Internal
         public readonly bool TryPeek(long offset, out T value)
         {
             if (offset < 0)
-                ThrowHelper.ThrowArgumentOutOfRangeException_OffsetOutOfRange();
+                throw new ArgumentOutOfRangeException();
 
             // If we've got data and offset is not out of bounds
             if (!_moreData || Remaining <= offset)
@@ -362,7 +362,7 @@ namespace StompDotNet.Internal
         {
             if (count < 0)
             {
-                ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.count);
+                throw new ArgumentOutOfRangeException();
             }
 
             Consumed += count;
@@ -395,7 +395,7 @@ namespace StompDotNet.Internal
             {
                 // Not enough data left- adjust for where we actually ended and throw
                 Consumed -= count;
-                ThrowHelper.ThrowArgumentOutOfRangeException(ExceptionArgument.count);
+                throw new ArgumentOutOfRangeException();
             }
         }
 

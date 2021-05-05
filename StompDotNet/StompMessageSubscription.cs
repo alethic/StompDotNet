@@ -10,7 +10,11 @@ namespace StompDotNet
     /// <summary>
     /// Represents a subscription established on the STOMP server.
     /// </summary>
-    public class StompMessageSubscription : IAsyncDisposable
+    public class StompMessageSubscription :
+#if NETSTANDARD2_1
+        IAsyncDisposable,
+#endif
+        IDisposable
     {
 
         readonly StompConnection connection;
@@ -100,6 +104,15 @@ namespace StompDotNet
         public ValueTask DisposeAsync()
         {
             return UnsubscribeAsync(null, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Disposes of the instance.
+        /// </summary>
+        /// <returns></returns>
+        public void Dispose()
+        {
+            Task.Run(() => DisposeAsync()).ConfigureAwait(false).GetAwaiter().GetResult();
         }
 
     }

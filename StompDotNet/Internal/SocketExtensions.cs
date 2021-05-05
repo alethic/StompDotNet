@@ -34,6 +34,20 @@ namespace StompDotNet.Internal
 
 #endif
 
+#if NETSTANDARD2_0
+
+        public static ValueTask<int> ReceiveAsync(this Socket socket, Memory<byte> buffer, SocketFlags socketFlags, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+        
+        public static ValueTask<int> SendAsync(this Socket socket, ReadOnlyMemory<byte> buffer, SocketFlags socketFlags, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+#endif
+
     }
 
 }

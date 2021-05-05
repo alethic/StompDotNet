@@ -96,7 +96,7 @@ namespace StompDotNet
             }
             else
             {
-                if (sequence.TryReadTo(out ReadOnlySpan<byte> buffer, 0x00) == false)
+                if (sequence.TryReadTo(out ReadOnlySpan<byte> buffer, (byte)0x00) == false)
                     return false;
 
                 // allocate new buffer and copy body contents
