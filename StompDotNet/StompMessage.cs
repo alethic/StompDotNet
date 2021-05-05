@@ -13,7 +13,7 @@ namespace StompDotNet
     public class StompMessage
     {
 
-        readonly StompMessageSubscription subscription;
+        readonly StompSubscription subscription;
         readonly IReadOnlyList<KeyValuePair<string, string>> headers;
         readonly ReadOnlyMemory<byte> body;
 
@@ -23,7 +23,7 @@ namespace StompDotNet
         /// <param name="subscription"></param>
         /// <param name="headers"></param>
         /// <param name="body"></param>
-        public StompMessage(StompMessageSubscription subscription, IReadOnlyList<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body)
+        public StompMessage(StompSubscription subscription, IReadOnlyList<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body)
         {
             this.subscription = subscription ?? throw new ArgumentNullException(nameof(subscription));
             this.headers = headers ?? new List<KeyValuePair<string, string>>();
@@ -33,7 +33,7 @@ namespace StompDotNet
         /// <summary>
         /// Gets the subscription that originated the message.
         /// </summary>
-        public StompMessageSubscription Subscription => subscription;
+        public StompSubscription Subscription => subscription;
 
         /// <summary>
         /// Gets the first header value with the specified key.

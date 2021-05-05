@@ -10,7 +10,7 @@ namespace StompDotNet
     /// <summary>
     /// Represents a subscription established on the STOMP server.
     /// </summary>
-    public class StompMessageSubscription :
+    public class StompSubscription :
 #if NETSTANDARD2_1
         IAsyncDisposable,
 #endif
@@ -30,7 +30,7 @@ namespace StompDotNet
         /// <param name="id"></param>
         /// <param name="reader"></param>
         /// <param name="completeAsync"></param>
-        public StompMessageSubscription(StompConnection connection, string id, ChannelReader<StompFrame> reader, Func<Exception, ValueTask> completeAsync)
+        public StompSubscription(StompConnection connection, string id, ChannelReader<StompFrame> reader, Func<Exception, ValueTask> completeAsync)
         {
             this.connection = connection ?? throw new ArgumentNullException(nameof(connection));
             this.id = id ?? throw new ArgumentNullException(nameof(id));
@@ -79,6 +79,23 @@ namespace StompDotNet
                 return new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body);
 
             return null;
+        }
+
+        /// <summary>
+        /// Attempts to read a message from the subscription.
+        /// </summary>
+        /// <param name="message"></param>
+        /// <returns></returns>
+        public bool TryRead(out StompMessage message)
+        {
+            if (reader.TryRead(out var frame))
+            {
+                message = new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body);
+                return true;
+            }
+
+            message = null;
+            return false;
         }
 
         /// <summary>

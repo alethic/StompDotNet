@@ -649,7 +649,7 @@ namespace StompDotNet
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public async ValueTask<StompMessageSubscription> SubscribeAsync(string destination, StompAckMode ack, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        public async ValueTask<StompSubscription> SubscribeAsync(string destination, StompAckMode ack, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(destination))
                 throw new ArgumentException($"'{nameof(destination)}' cannot be null or whitespace.", nameof(destination));
@@ -696,7 +696,7 @@ namespace StompDotNet
             }
 
             // caller obtains a subscription reference that closes the channel upon completion
-            return new StompMessageSubscription(this, id, channel.Reader, CompleteAsync);
+            return new StompSubscription(this, id, channel.Reader, CompleteAsync);
         }
 
         /// <summary>
@@ -740,7 +740,7 @@ namespace StompDotNet
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        internal async ValueTask UnsubscribeAsync(StompMessageSubscription subscription, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        internal async ValueTask UnsubscribeAsync(StompSubscription subscription, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
         {
             if (subscription is null)
                 throw new ArgumentNullException(nameof(subscription));
