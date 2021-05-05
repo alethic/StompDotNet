@@ -1,5 +1,7 @@
 ﻿using System.Text;
 
+using StompDotNet.Internal;
+
 namespace StompDotNet
 {
 

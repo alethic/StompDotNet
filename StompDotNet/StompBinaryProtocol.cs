@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
+using StompDotNet.Internal;
+
 namespace StompDotNet
 {
 
@@ -199,7 +201,7 @@ namespace StompDotNet
             if (lineBytes.Length > 255)
                 throw new StompProtocolException("Max size reached for header line.");
 
-            var line = (ReadOnlySpan<char>)Encoding.UTF8.GetString(lineBytes).TrimEnd('\r');
+            var line = Encoding.UTF8.GetString(lineBytes).TrimEnd('\r');
             if (line.Length == 0)
                 return true;
 

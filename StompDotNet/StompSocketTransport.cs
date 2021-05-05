@@ -8,6 +8,8 @@ using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
 
+using StompDotNet.Internal;
+
 namespace StompDotNet
 {
 
@@ -135,7 +137,7 @@ namespace StompDotNet
                 logger.LogError(e, "Unexpected exception closing socket");
             }
 
-            return ValueTask.CompletedTask;
+            return ValueTaskHelper.CompletedTask;
         }
 
         /// <summary>

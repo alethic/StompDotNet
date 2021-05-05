@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
 
+using StompDotNet.Internal;
+
 namespace StompDotNet
 {
 
@@ -54,7 +56,7 @@ namespace StompDotNet
         /// <returns></returns>
         public virtual ValueTask CloseAsync(CancellationToken cancellationToken)
         {
-            return ValueTask.CompletedTask;
+            return ValueTaskHelper.CompletedTask;
         }
 
         /// <summary>
@@ -63,7 +65,7 @@ namespace StompDotNet
         /// <returns></returns>
         public virtual ValueTask DisposeAsync()
         {
-            return ValueTask.CompletedTask;
+            return ValueTaskHelper.CompletedTask;
         }
 
     }

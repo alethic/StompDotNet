@@ -10,6 +10,8 @@ using Microsoft.Extensions.Logging;
 
 using Nito.AsyncEx;
 
+using StompDotNet.Internal;
+
 namespace StompDotNet
 {
 
@@ -119,14 +121,14 @@ namespace StompDotNet
         ValueTask SetState(StompConnectionState state, Exception exception = null, CancellationToken cancellationToken = default)
         {
             if (this.state == state)
-                return ValueTask.CompletedTask;
+                return ValueTaskHelper.CompletedTask;
 
             // update state and let any listeners know
             this.state = state;
             if (StateChanged != null)
                 return OnStateChanged(new StompConnectionStateChangeArgs(state, exception, cancellationToken));
 
-            return ValueTask.CompletedTask;
+            return ValueTaskHelper.CompletedTask;
         }
 
         /// <summary>
@@ -490,7 +492,7 @@ namespace StompDotNet
             // schedule a router for the frame filter
             var tcs = new TaskCompletionSource<StompFrame>();
             ValueTask<bool> WriteAsync(StompFrame frame, CancellationToken cancellationToken) { tcs.SetResult(frame); return new ValueTask<bool>(false); }
-            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { tcs.SetException(exception); return ValueTask.CompletedTask; }
+            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { tcs.SetException(exception); return ValueTaskHelper.CompletedTask; }
             var hnd = new FrameRouter(response, WriteAsync, AbortAsync);
 
             // handle cancellation through new task
@@ -590,7 +592,7 @@ namespace StompDotNet
             if (options.MaximumVersion >= StompVersion.Stomp_1_2)
                 l.Add("1.1");
 
-            return string.Join(',', l);
+            return string.Join(",", l);
         }
 
         /// <summary>
@@ -657,7 +659,7 @@ namespace StompDotNet
             // establish a router for inbound messages, and direct them to a new channel for the subscription
             var channel = Channel.CreateUnbounded<StompFrame>();
             async ValueTask<bool> RouteAsync(StompFrame frame, CancellationToken cancellationToken) { await channel.Writer.WriteAsync(frame, cancellationToken); return true; }
-            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { channel.Writer.Complete(exception); return ValueTask.CompletedTask; }
+            ValueTask AbortAsync(Exception exception, CancellationToken cancellationToken) { channel.Writer.Complete(exception); return ValueTaskHelper.CompletedTask; }
             var router = await RegisterRouterAsync(new FrameRouter(frame => frame.GetHeaderValue("subscription") == id, RouteAsync, AbortAsync), cancellationToken);
 
             // completes the channel and removes the listener
