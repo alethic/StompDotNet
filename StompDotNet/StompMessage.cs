@@ -65,23 +65,25 @@ namespace StompDotNet
         /// <summary>
         /// Sends an 'ACK' command for the current message.
         /// </summary>
+        /// <param name="transaction"></param>
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public ValueTask AckAsync(IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        public ValueTask AckAsync(StompTransaction transaction = null, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
         {
-            return subscription.Connection.AckAsync(Id, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
+            return subscription.Connection.AckAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
         }
 
         /// <summary>
         /// Sends an 'ACK' command for the current message.
         /// </summary>
+        /// <param name="transaction"></param>
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        public ValueTask NackAsync(IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        public ValueTask NackAsync(StompTransaction transaction = null, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
         {
-            return subscription.Connection.NackAsync(Id, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
+            return subscription.Connection.NackAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
         }
 
     }

@@ -86,6 +86,7 @@ namespace StompDotNet
         string session;
         int prevReceiptId = 0;
         int prevSubscriptionId = 0;
+        int prevTransactionId = 0;
 
         /// <summary>
         /// Initializes a new instance.
@@ -470,7 +471,7 @@ namespace StompDotNet
         /// <param name="frame"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        async ValueTask SendAsync(StompFrame frame, CancellationToken cancellationToken)
+        async ValueTask SendFrameAsync(StompFrame frame, CancellationToken cancellationToken)
         {
             if (state == StompConnectionState.Aborted)
                 throw new StompConnectionAbortedException("Cannot send, connection in aborted state.");
@@ -489,7 +490,7 @@ namespace StompDotNet
         /// <param name="response"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        async ValueTask<StompFrame> SendAndWaitAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, Func<StompFrame, bool> response, CancellationToken cancellationToken)
+        async ValueTask<StompFrame> SendFrameAndWaitAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, Func<StompFrame, bool> response, CancellationToken cancellationToken)
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
@@ -508,7 +509,7 @@ namespace StompDotNet
             try
             {
                 // send initial frame and wait for resumption
-                await SendAsync(new StompFrame(command, headers, body), cancellationToken);
+                await SendFrameAsync(new StompFrame(command, headers, body), cancellationToken);
                 return await tcs.Task;
             }
             finally
@@ -529,14 +530,14 @@ namespace StompDotNet
         /// <param name="body"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        ValueTask<StompFrame> SendAndWaitWithReceiptAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
+        ValueTask<StompFrame> SendFrameAndWaitWithReceiptAsync(StompCommand command, IEnumerable<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
             var receiptIdText = Interlocked.Increment(ref prevReceiptId).ToString();
             headers = headers.Prepend(new KeyValuePair<string, string>("receipt", receiptIdText));
             cancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, new CancellationTokenSource(options.ReceiptTimeout).Token).Token;
-            return SendAndWaitAsync(command, headers, body, f => f.GetHeaderValue("receipt-id") == receiptIdText, cancellationToken);
+            return SendFrameAndWaitAsync(command, headers, body, f => f.GetHeaderValue("receipt-id") == receiptIdText, cancellationToken);
         }
 
         /// <summary>
@@ -571,7 +572,7 @@ namespace StompDotNet
 
             logger.LogInformation("Initating STOMP connection: Host={Host}", host);
 
-            var result = await SendAndWaitAsync(StompCommand.Connect, headers, null, frame => frame.Command == StompCommand.Connected || frame.Command == StompCommand.Error, cancellationToken);
+            var result = await SendFrameAndWaitAsync(StompCommand.Connect, headers, null, frame => frame.Command == StompCommand.Connected || frame.Command == StompCommand.Error, cancellationToken);
             if (result.Command == StompCommand.Error)
                 throw new StompException($"ERROR waiting for CONNECTED response: {Encoding.UTF8.GetString(result.Body.Span)}");
             if (result.Command != StompCommand.Connected)
@@ -635,11 +636,35 @@ namespace StompDotNet
         {
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
 
-            var result = await SendAndWaitWithReceiptAsync(StompCommand.Disconnect, headers, null, cancellationToken);
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Disconnect, headers, null, cancellationToken);
             if (result.Command == StompCommand.Error)
-                throw new StompException($"ERROR waiting for DISCONNECT receipt: {Encoding.UTF8.GetString(result.Body.Span)}");
+                throw new StompErrorFrameException(result);
             if (result.Command != StompCommand.Receipt)
                 throw new StompException("Did not receive DISCONNECT receipt.");
+        }
+
+        /// <summary>
+        /// Sends a message to a destination in the messaging system.
+        /// </summary>
+        /// <param name="destination"></param>
+        /// <param name="transaction"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public async ValueTask SendAsync(string destination, StompTransaction transaction = null, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(destination))
+                throw new ArgumentException($"'{nameof(destination)}' cannot be null or whitespace.", nameof(destination));
+
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            if (transaction != null)
+                headers = headers.Prepend(new KeyValuePair<string, string>("transaction", transaction.Id));
+            headers = headers.Prepend(new KeyValuePair<string, string>("destination", destination));
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Send, headers, null, cancellationToken);
+            if (result.Command == StompCommand.Error)
+                throw new StompErrorFrameException(result);
+            if (result.Command != StompCommand.Receipt)
+                throw new StompException("Did not receive SEND receipt.");
         }
 
         /// <summary>
@@ -682,9 +707,9 @@ namespace StompDotNet
             try
             {
                 // send SUBSCRIBE command
-                var result = await SendAndWaitWithReceiptAsync(StompCommand.Subscribe, headers, null, cancellationToken);
+                var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Subscribe, headers, null, cancellationToken);
                 if (result.Command == StompCommand.Error)
-                    throw new StompException($"ERROR waiting for SUBSCRIBE receipt: {Encoding.UTF8.GetString(result.Body.Span)}");
+                    throw new StompErrorFrameException(result);
                 if (result.Command != StompCommand.Receipt)
                     throw new StompException("Did not receive SUBSCRIBE receipt.");
             }
@@ -726,9 +751,9 @@ namespace StompDotNet
 
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
             headers = headers.Prepend(new KeyValuePair<string, string>("id", id));
-            var result = await SendAndWaitWithReceiptAsync(StompCommand.Unsubscribe, headers, null, cancellationToken);
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Unsubscribe, headers, null, cancellationToken);
             if (result.Command == StompCommand.Error)
-                throw new StompException($"ERROR waiting for UNSUBSCRIBE receipt: {Encoding.UTF8.GetString(result.Body.Span)}");
+                throw new StompErrorFrameException(result);
             if (result.Command != StompCommand.Receipt)
                 throw new StompException("Did not receive UNSUBSCRIBE receipt.");
         }
@@ -753,19 +778,22 @@ namespace StompDotNet
         /// Acknowleges the consumption of a message.
         /// </summary>
         /// <param name="id"></param>
+        /// <param name="transaction"></param>
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        internal async ValueTask AckAsync(string id, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        internal async ValueTask AckAsync(string id, StompTransaction transaction, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
         {
             if (id is null)
                 throw new ArgumentNullException(nameof(id));
 
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            if (transaction != null)
+                headers = headers.Prepend(new KeyValuePair<string, string>("transaction", transaction.Id));
             headers = headers.Prepend(new KeyValuePair<string, string>("message-id", id));
-            var result = await SendAndWaitWithReceiptAsync(StompCommand.Ack, headers, null, cancellationToken);
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Ack, headers, null, cancellationToken);
             if (result.Command == StompCommand.Error)
-                throw new StompException($"ERROR waiting for ACK receipt: {Encoding.UTF8.GetString(result.Body.Span)}");
+                throw new StompErrorFrameException(result);
             if (result.Command != StompCommand.Receipt)
                 throw new StompException("Did not receive ACK receipt.");
         }
@@ -774,21 +802,86 @@ namespace StompDotNet
         /// Informs the server that a message was not consumed.
         /// </summary>
         /// <param name="id"></param>
+        /// <param name="transaction"></param>
         /// <param name="headers"></param>
         /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        internal async ValueTask NackAsync(string id, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        internal async ValueTask NackAsync(string id, StompTransaction transaction, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
         {
             if (id is null)
                 throw new ArgumentNullException(nameof(id));
 
             headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            if (transaction != null)
+                headers = headers.Prepend(new KeyValuePair<string, string>("transaction", transaction.Id));
             headers = headers.Prepend(new KeyValuePair<string, string>("message-id", id));
-            var result = await SendAndWaitWithReceiptAsync(StompCommand.Nack, headers, null, cancellationToken);
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Nack, headers, null, cancellationToken);
             if (result.Command == StompCommand.Error)
-                throw new StompException($"ERROR waiting for NACK receipt: {Encoding.UTF8.GetString(result.Body.Span)}");
+                throw new StompErrorFrameException(result);
             if (result.Command != StompCommand.Receipt)
                 throw new StompException("Did not receive NACK receipt.");
+        }
+
+        /// <summary>
+        /// Begins a new STOMP transaction.
+        /// </summary>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public async ValueTask<StompTransaction> BeginAsync(IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
+        {
+            var id = Interlocked.Increment(ref prevTransactionId).ToString();
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            headers = headers.Prepend(new KeyValuePair<string, string>("transaction", id));
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Begin, headers, null, cancellationToken);
+            if (result.Command == StompCommand.Error)
+                throw new StompErrorFrameException(result);
+            if (result.Command != StompCommand.Receipt)
+                throw new StompException("Did not receive BEGIN receipt.");
+
+            return new StompTransaction(this, id);
+        }
+
+        /// <summary>
+        /// Commmits the specified transaction.
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        internal async ValueTask CommitAsync(string id, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(id))
+                throw new ArgumentException($"'{nameof(id)}' cannot be null or empty.", nameof(id));
+
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            headers = headers.Prepend(new KeyValuePair<string, string>("transaction", id));
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Commit, headers, null, cancellationToken);
+            if (result.Command == StompCommand.Error)
+                throw new StompErrorFrameException(result);
+            if (result.Command != StompCommand.Receipt)
+                throw new StompException("Did not receive COMMIT receipt.");
+        }
+
+        /// <summary>
+        /// Aborts the specified transaction.
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="headers"></param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        internal async ValueTask AbortAsync(string id, IEnumerable<KeyValuePair<string, string>> headers, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(id))
+                throw new ArgumentException($"'{nameof(id)}' cannot be null or empty.", nameof(id));
+
+            headers ??= Enumerable.Empty<KeyValuePair<string, string>>();
+            headers = headers.Prepend(new KeyValuePair<string, string>("transaction", id));
+            var result = await SendFrameAndWaitWithReceiptAsync(StompCommand.Abort, headers, null, cancellationToken);
+            if (result.Command == StompCommand.Error)
+                throw new StompErrorFrameException(result);
+            if (result.Command != StompCommand.Receipt)
+                throw new StompException("Did not receive ABORT receipt.");
         }
 
         /// <summary>

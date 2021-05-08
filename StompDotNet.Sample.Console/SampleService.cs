@@ -17,6 +17,7 @@ namespace StompDotNet.Sample.Console
         readonly ILogger<SampleService> logger;
 
         StompConnection connection;
+        StompTransaction transaction;
         CancellationTokenSource cts;
         Task run;
 
@@ -34,6 +35,7 @@ namespace StompDotNet.Sample.Console
             var f = new StompWebSocketConnectionFactory(c => { c.Credentials = new NetworkCredential("admin", "admin"); }, logger);
             var e = new UriEndPoint(new Uri("ws://localhost:44112/websockets/messaging/websocket"));
             connection = await f.OpenAsync(e, cancellationToken);
+            transaction = await connection.BeginAsync(cancellationToken: cancellationToken);
 
             cts = new CancellationTokenSource();
             run = Task.Run(() => RunAsync(cts.Token));
@@ -54,7 +56,7 @@ namespace StompDotNet.Sample.Console
         async Task HandleMessageAsync(StompMessage message, CancellationToken cancellationToken)
         {
             logger.LogInformation("RECEIVED: {Message}", Encoding.UTF8.GetString(message.Body.Span));
-            await message.AckAsync(cancellationToken: cancellationToken);
+            await message.AckAsync(transaction: transaction, cancellationToken: cancellationToken);
         }
 
         public async Task StopAsync(CancellationToken cancellationToken)
