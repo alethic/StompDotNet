@@ -76,7 +76,7 @@ namespace StompDotNet
         public async ValueTask<StompMessage> ReadAsync(CancellationToken cancellationToken = default)
         {
             if (await reader.ReadAsync(cancellationToken) is StompFrame frame)
-                return new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body);
+                return new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body, this.cancellationToken);
 
             return null;
         }
@@ -90,7 +90,7 @@ namespace StompDotNet
         {
             if (reader.TryRead(out var frame))
             {
-                message = new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body);
+                message = new StompMessage(this, new List<KeyValuePair<string, string>>(frame.Headers), frame.Body, this.cancellationToken);
                 return true;
             }
 

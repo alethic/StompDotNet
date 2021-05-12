@@ -16,6 +16,7 @@ namespace StompDotNet
         readonly StompSubscription subscription;
         readonly IReadOnlyList<KeyValuePair<string, string>> headers;
         readonly ReadOnlyMemory<byte> body;
+        readonly CancellationToken cancellationToken;
 
         /// <summary>
         /// Initializes a new instance.
@@ -23,11 +24,12 @@ namespace StompDotNet
         /// <param name="subscription"></param>
         /// <param name="headers"></param>
         /// <param name="body"></param>
-        public StompMessage(StompSubscription subscription, IReadOnlyList<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body)
+        public StompMessage(StompSubscription subscription, IReadOnlyList<KeyValuePair<string, string>> headers, ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
         {
             this.subscription = subscription ?? throw new ArgumentNullException(nameof(subscription));
             this.headers = headers ?? new List<KeyValuePair<string, string>>();
             this.body = body;
+            this.cancellationToken = cancellationToken;
         }
 
         /// <summary>
@@ -63,6 +65,11 @@ namespace StompDotNet
         public ReadOnlyMemory<byte> Body => body;
 
         /// <summary>
+        /// Cancellation token that is signaled when the message is no longer valid.
+        /// </summary>
+        public CancellationToken CancellationToken => cancellationToken;
+
+        /// <summary>
         /// Sends an 'ACK' command for the current message.
         /// </summary>
         /// <param name="transaction"></param>
@@ -71,7 +78,7 @@ namespace StompDotNet
         /// <returns></returns>
         public ValueTask AckAsync(StompTransaction transaction = null, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
         {
-            return subscription.Connection.AckAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
+            return subscription.Connection.AckAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(this.cancellationToken, cancellationToken).Token);
         }
 
         /// <summary>
@@ -83,7 +90,7 @@ namespace StompDotNet
         /// <returns></returns>
         public ValueTask NackAsync(StompTransaction transaction = null, IEnumerable<KeyValuePair<string, string>> headers = null, CancellationToken cancellationToken = default)
         {
-            return subscription.Connection.NackAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(subscription.CancellationToken, cancellationToken).Token);
+            return subscription.Connection.NackAsync(Id, transaction, headers, CancellationTokenSource.CreateLinkedTokenSource(this.cancellationToken, cancellationToken).Token);
         }
 
     }
